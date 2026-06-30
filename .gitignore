@@ -1,0 +1,22 @@
+# 编译产物
+build/
+*.o
+*.d
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+
+# IDE 配置（CLion / STM32CubeIDE）
+.idea/
+.mxproject
+*.ioc.bak
+
+# CMake 生成
+CMakeFiles/
+cmake-build-*/
+
+# 操作系统杂项
+.DS_Store
+Thumbs.db
