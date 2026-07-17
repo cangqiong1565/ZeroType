@@ -36,7 +36,6 @@
 /* 1. 定义空闲任务的栈大小 (通常在 Config.h 中，这里先手动补上) */
 #define configMINIMAL_STACK_SIZE  ( ( unsigned short ) 128 )
 
-extern uint32_t SystemCoreClock; // 引用 HAL 库维护的全局变量
 #define configCPU_CLOCK_HZ (( uint32_t ) 480000000)
 #define configTICK_RATE_HZ (( TickType_t ) 1000)
 

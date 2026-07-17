@@ -309,7 +309,11 @@ ICM42688_Status ICM42688_CalibrateBias(void)
     while ((valid < SAMPLES) && (attempts < MAX_ATTEMPTS)) {
         attempts++;
 
-        if (ICM42688_ReadRaw(&raw) == ICM42688_OK) {
+        if (ICM42688_ReadRaw(&raw) == ICM42688_OK) {/* ================================================================
+ * 数据读取 — 从 TEMP_DATA1 (0x1D) 突发读 14 字节
+ * 布局: temp[2] + accel_x[2] + accel_y[2] + accel_z[2]
+ *               + gyro_x[2]  + gyro_y[2]  + gyro_z[2]
+ * ================================================================ */
             sum[0] += raw.gyro_x;
             sum[1] += raw.gyro_y;
             sum[2] += raw.gyro_z;

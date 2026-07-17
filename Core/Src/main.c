@@ -27,12 +27,14 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ICM42688.h"
-#include "../Inc/app_task.h"
+#include "app_task.h"
+#include "Dshot.h"
+#include "MahonyAHRS.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+ICM42688_Status imu_status;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -100,8 +102,22 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
+  Dshot_Init();
   HAL_Delay(1000);
-  ICM42688_Init();
+  imu_status = ICM42688_Init();
+  if (imu_status != ICM42688_OK)
+  {
+    Error_Handler();
+  }
+
+  HAL_Delay(50);
+
+  imu_status = ICM42688_CalibrateBias();
+  if (imu_status != ICM42688_OK)
+  {
+    Error_Handler();
+  }
+  MahonyAHRS_init(2.0f, 0.0f);
   prvInitialiseTaskLists();
   AppTaskInit();
   vTaskStartScheduler();
