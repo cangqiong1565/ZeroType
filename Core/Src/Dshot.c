@@ -1,14 +1,21 @@
 #include "Dshot.h"
 #include "tim.h"
 #include "dma.h"
+#include "Task.h"
+#include "Queue.h"
+#define DSHOT_DMA_EVENT_DONE  1U
+#define DSHOT_DMA_EVENT_ERROR 2U
 
+static Queue_t dshot_dma_done_queue;
+static uint8_t dshot_dma_done_storage[1];
+static QueueHandle_t dshot_dma_done_queue_handle = NULL;
 
 #define DSHOT_MOTOR_COUNT 4U
 #define DSHOT_BURST_BUF_LEN (DSHOT_FRAME_LEN * DSHOT_MOTOR_COUNT)
 #define DSHOT_BURST_BUF_BYTES (DSHOT_BURST_BUF_LEN * sizeof(uint32_t))
-#define DSHOT_DMA_BUF_ADDR ((uint32_t *)0x30000400U)
 
-static uint32_t * const dshot_dma_buf = DSHOT_DMA_BUF_ADDR;
+static uint32_t dshot_dma_buf[DSHOT_BURST_BUF_LEN]
+        __attribute__((__section__(".dma_buffer"), aligned(32)));
 
 //dma在忙标志
 static volatile uint8_t dshot_busy = 0;
@@ -83,36 +90,83 @@ static void Dshot_PackBurstFrame(uint16_t m0,uint16_t m1,uint16_t m2,uint16_t m3
     }
 }
 
+static void Dshot_SendDmaEventFromISR(uint8_t event)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    if (dshot_dma_done_queue_handle != NULL)
+    {
+        (void)xQueueGenericSendFromISR(
+            dshot_dma_done_queue_handle,
+            &event,
+            &xHigherPriorityTaskWoken
+        );
+
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
 
 static void Dshot_DMA_CpltCallback(DMA_HandleTypeDef *hdma)
 {
     (void)hdma;
 
+    __HAL_TIM_DISABLE_DMA(&htim8,TIM_DMA_UPDATE);
+
+    dshot_busy = 0U;
     /*
      * 一帧 DShot 已经搬完，后续不需要 TIM8 update 再继续触发 DMA。
      * 这里不要 HAL_DMA_Abort：完成回调本身就是 DMA 正常结束路径，
      * 在回调里 abort 容易破坏下一帧启动时的 DMA 状态。
      */
-    __HAL_TIM_DISABLE_DMA(&htim8, TIM_DMA_UPDATE);
-
-    dshot_busy = 0U;
+    Dshot_SendDmaEventFromISR(DSHOT_DMA_EVENT_DONE);
 }
 
-void Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3)
+static void Dshot_ClearOldDmaEvents(void)
 {
-    if (dshot_busy)
+    uint8_t event;
+
+    if (dshot_dma_done_queue_handle == NULL)
     {
         return;
     }
 
+    while (xQueueGenericReceive(dshot_dma_done_queue_handle, &event, 0U) == pdPASS)
+    {
+        //清空旧事件
+    }
+}
+
+
+uint8_t Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3)
+{
+    if (dshot_busy != 0U)
+    {
+        return 0U;
+    }
+
+    Dshot_ClearOldDmaEvents();
+
     Dshot_PackBurstFrame(m0,m1,m2,m3);
 
-    SCB_CleanDCache_by_Addr((uint32_t *)dshot_dma_buf,
-                            (int32_t)DSHOT_BURST_BUF_BYTES);
+    if ((SCB->CCR & SCB_CCR_DC_Msk) != 0U)
+    {
+        SCB_CleanDCache_by_Addr((uint32_t *)dshot_dma_buf,
+                                (int32_t)DSHOT_BURST_BUF_BYTES);
+    }
+
+    taskENTER_CRITICAL();
+
+    if (dshot_busy != 0U)
+    {
+        taskEXIT_CRITICAL();
+        return 0U;
+    }
 
     dshot_busy = 1U;
 
     __HAL_TIM_DISABLE_DMA(&htim8, TIM_DMA_UPDATE);
+    __HAL_TIM_CLEAR_FLAG(&htim8,TIM_FLAG_UPDATE);
 
     htim8.Instance->DCR = TIM_DMABASE_CCR1 | TIM_DMABURSTLENGTH_4TRANSFERS;
 
@@ -122,12 +176,45 @@ void Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3)
         DSHOT_BURST_BUF_LEN) != HAL_OK)
     {
         dshot_busy = 0U;
-        return;
+        taskEXIT_CRITICAL();
+        return 0U;
     }
 
     __HAL_TIM_SET_COUNTER(&htim8 ,0U);
-
     __HAL_TIM_ENABLE_DMA(&htim8, TIM_DMA_UPDATE);
+
+    taskEXIT_CRITICAL();
+
+    return 1U;
+}
+
+uint8_t Dshot_WaitDmaDone(uint32_t timeout_ticks)
+{
+    uint8_t event = 0U;
+
+    if (dshot_dma_done_queue_handle == NULL)
+    {
+        return 0U;
+    }
+
+    if (xQueueGenericReceive(dshot_dma_done_queue_handle,
+                             &event,
+                             timeout_ticks) != pdPASS)
+    {
+        taskENTER_CRITICAL();
+        __HAL_TIM_DISABLE_DMA(&htim8,TIM_DMA_UPDATE);
+        taskEXIT_CRITICAL();
+
+        (void)HAL_DMA_Abort(htim8.hdma[TIM_DMA_ID_UPDATE]);
+
+        taskENTER_CRITICAL();
+        dshot_busy = 0U;
+        taskEXIT_CRITICAL();
+
+        return 0U;
+    }
+
+    return event == DSHOT_DMA_EVENT_DONE;
 }
 
 uint8_t Dshot_Ready(void)
@@ -135,9 +222,26 @@ uint8_t Dshot_Ready(void)
     return dshot_busy == 0U;
 }
 
+static void Dshot_DMA_ErrorCallback(DMA_HandleTypeDef *hdma)
+{
+    (void)hdma;
+
+    __HAL_TIM_DISABLE_DMA(&htim8, TIM_DMA_UPDATE);
+
+    dshot_busy = 0U;
+
+    Dshot_SendDmaEventFromISR(DSHOT_DMA_EVENT_ERROR);
+}
+
 void Dshot_Init(void)
 {
+    dshot_dma_done_queue_handle = xQueueCreateStatic(1,
+        sizeof(uint8_t),
+        dshot_dma_done_storage,
+        &dshot_dma_done_queue);
+
     htim8.hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = Dshot_DMA_CpltCallback;
+    htim8.hdma[TIM_DMA_ID_UPDATE]->XferErrorCallback = Dshot_DMA_ErrorCallback;
 
     Dshot_PackBurstFrame(0U,0U,0U,0U);
 
@@ -146,5 +250,5 @@ void Dshot_Init(void)
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);
 
-    dshot_busy = 0;
+    dshot_busy = 0U;
 }

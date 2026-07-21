@@ -26,7 +26,8 @@ extern USBD_HandleTypeDef hUsbDeviceFS;
  * 3. 当前链接脚本把普通 .bss 放在 DTCM。STM32H7 的 USB 外设不能直接
  *    访问 DTCM，所以日志 ring 固定放在 D2 SRAM 起始地址 0x30000000。
  */
-static uint8_t * const usb_log_ring = (uint8_t *)0x30000000U;
+static uint8_t usb_log_ring[USB_LOG_RING_SIZE]
+    __attribute__((section(".dma_buffer"), aligned(32)));
 static volatile uint32_t usb_log_head = 0;       /* 下一个写入位置 */
 static volatile uint32_t usb_log_tail = 0;       /* 下一个读出位置 */
 static volatile uint32_t usb_log_dropped = 0;    /* ring 满或发送失败时丢弃的字节数 */
@@ -146,7 +147,6 @@ void Betaflight_USB_Server(void)
      */
     static uint8_t tx_buffer[USB_LOG_TX_CHUNK] __attribute__((aligned(32)));
     uint32_t len = 0;
-    uint32_t cache_len;
     USBD_CDC_HandleTypeDef *hcdc;
 
     if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)
@@ -181,10 +181,6 @@ void Betaflight_USB_Server(void)
     {
         return;
     }
-
-    /* DCache clean 长度也按 32 字节向上取整。 */
-    cache_len = (len + 31U) & ~31U;
-    SCB_CleanDCache_by_Addr((uint32_t *)tx_buffer, (int32_t)cache_len);
 
     if (CDC_Transmit_FS(tx_buffer, (uint16_t)len) != USBD_OK)
     {

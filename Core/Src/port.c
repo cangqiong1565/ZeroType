@@ -1,5 +1,9 @@
 #include "port.h"
 
+#define portCPACR_REG                 (*((volatile uint32_t *)0xE000ED88UL))  // FPU 协处理器访问控制寄存器
+#define portFPCCR_REG                 (*((volatile uint32_t *)0xE000EF34UL))  // FPU 上下文控制寄存器
+#define portCP10_CP11_FULL_ACCESS     (0xFUL << 20UL)                         // CP10/CP11 完全访问权限
+#define portASPEN_LSPEN_BITS          (0x3UL << 30UL)                         //ASPEN + LSPEN，自动/懒惰保存浮点现场
 
 extern void *volatile pxCurrentTCB;
 extern void HAL_IncTick(void);
@@ -8,6 +12,16 @@ extern void vTaskSwitchContext(void);
 
 static UBaseType_t uxCriticalNesting = 0;
 
+void vPortEnableFPU(void)
+{
+    portCPACR_REG |= portCP10_CP11_FULL_ACCESS;     //明确允许CPU使用FPU
+
+    portFPCCR_REG |= portASPEN_LSPEN_BITS;          //开启浮点上下文自动压栈和懒惰压栈
+
+    __asm volatile ("dsb" ::: "memory");            //等待寄存器写入真正生效
+
+    __asm volatile ("isb");                         //刷新流水线，让后续指令看到新的FPU配置
+}
 //错误处理，如果有错误，程序停在这
 static void prvTaskExitError(void)
 {
@@ -113,6 +127,10 @@ __attribute__((naked)) void prvStartFirstTask(void)
 
         //msr->写入特殊寄存器指令，把R0的值（也就是MSP初始值）写入MSP，让其复位到最初始的状态;
         " msr msp, r0           \n" /* 4. 重置 MSP 主堆栈指针，把它复位到最干净的状态 */
+
+        "mov r0, #0             \n"
+
+        "msr control,r0         \n"
 
         /*cpsie->全称Change Processor State, Enable Interrupts（改变处理器状态，使能中断）
          * i和f是其两个参数
@@ -313,7 +331,8 @@ __attribute__((naked)) void xPortPendSVHandler(void)
         "pxCurrentTCBConst_PendSV: .word pxCurrentTCB      \n"
         "vTaskSwitchContextConst: .word vTaskSwitchContext \n"
         : /* 无输出 */
-        : "i"(configMAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
+        // : "i"(configMAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
+        : "i"(configMAX_SYSCALL_INTERRUPT_PRIORITY)
     );
 }
 
@@ -404,10 +423,28 @@ void xPortSysTickHandler(void)
     vPortClearBASEPRIFromISR();
 }
 
+// void vPortSetupTimerInterrupt(void)
+// {
+//     //设置重装载寄存器的值
+//     portNVIC_SYSTICK_LOAD_REG = (configSYSTICK_CLOCK_HZ / configTICK_RATE_HZ) - 1UL;
+//
+//     portNVIC_SYSTICK_CTRL_REG = (portNVIC_SYSTICK_CLK_BIT | portNVIC_SYSTICK_INT_BIT | portNVIC_SYSTICK_ENABLE_BIT);
+// }
+
 void vPortSetupTimerInterrupt(void)
 {
-    //设置重装载寄存器的值
+    //关闭SysTick,避免配置过程中产生中断
+    portNVIC_SYSTICK_CTRL_REG = 0UL;
+
+    //设置1ms tick重装值
     portNVIC_SYSTICK_LOAD_REG = (configSYSTICK_CLOCK_HZ / configTICK_RATE_HZ) - 1UL;
 
-    portNVIC_SYSTICK_CTRL_REG = (portNVIC_SYSTICK_CLK_BIT | portNVIC_SYSTICK_INT_BIT | portNVIC_SYSTICK_ENABLE_BIT);
+    //清当前计数值，同时清掉 COUNTFLAG，避免一使能就立刻进 SysTick
+    portNVIC_SYSTICK_CURRENT_VALUE_REG = 0UL;
+
+    //重新开启Systick使用内核时钟开启中断启动计数
+    portNVIC_SYSTICK_CTRL_REG =
+       portNVIC_SYSTICK_CLK_BIT |
+       portNVIC_SYSTICK_INT_BIT |
+       portNVIC_SYSTICK_ENABLE_BIT;
 }

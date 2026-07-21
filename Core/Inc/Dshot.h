@@ -13,7 +13,8 @@
 #define DSHOT_THROTTLE_MAX   2047
 
 void Dshot_Init(void);
-void Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3);
+uint8_t Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3);
+uint8_t Dshot_WaitDmaDone(uint32_t timeout_ticks);
 uint8_t Dshot_Ready(void);
 
 #endif

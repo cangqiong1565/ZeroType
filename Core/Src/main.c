@@ -50,6 +50,13 @@ ICM42688_Status imu_status;
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+volatile uint32_t g_boot_stage = 0;
+volatile uint32_t g_error_stage = 0;
+volatile uint32_t g_error_handler = 0;
+volatile uint32_t g_fault_cfsr = 0;
+volatile uint32_t g_fault_hfsr = 0;
+volatile uint32_t g_fault_bfar = 0;
+volatile uint32_t g_fault_mmfar = 0;
 
 /* USER CODE END PV */
 
@@ -62,6 +69,13 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define BOOT_MARK(stage)     \
+  do                         \
+  {                          \
+    g_boot_stage = (stage);  \
+    __DSB();                 \
+    __ISB();                 \
+  } while (0)
 
 /* USER CODE END 0 */
 
@@ -78,13 +92,14 @@ int main(void)
 
   /* MPU Configuration--------------------------------------------------------*/
   MPU_Config();
-
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  SCB_EnableDCache();
+  SCB_EnableICache();
 
   /* USER CODE END Init */
 
@@ -99,24 +114,18 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_SPI3_Init();
-  MX_USB_DEVICE_Init();
   MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
-  Dshot_Init();
   HAL_Delay(1000);
-  imu_status = ICM42688_Init();
-  if (imu_status != ICM42688_OK)
-  {
-    Error_Handler();
-  }
 
-  HAL_Delay(50);
+  __HAL_RCC_D2SRAM1_CLK_ENABLE();
+  __HAL_RCC_D2SRAM2_CLK_ENABLE();
+  __HAL_RCC_D2SRAM3_CLK_ENABLE();
 
-  imu_status = ICM42688_CalibrateBias();
-  if (imu_status != ICM42688_OK)
-  {
-    Error_Handler();
-  }
+  __DSB();
+  __ISB();
+
+  Dshot_Init();
   MahonyAHRS_init(2.0f, 0.0f);
   prvInitialiseTaskLists();
   AppTaskInit();
@@ -257,6 +266,13 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  g_error_stage = g_boot_stage;
+  g_error_handler = 1;
+  g_fault_cfsr = SCB->CFSR;
+  g_fault_hfsr = SCB->HFSR;
+  g_fault_bfar = SCB->BFAR;
+  g_fault_mmfar = SCB->MMFAR;
+
   __disable_irq();
    while (1)
    {

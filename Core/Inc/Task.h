@@ -7,6 +7,9 @@
 
 #define taskYIELD() portYIELD()
 
+#define taskSTACK_FILL_WORD ((StackType_t)0xA5A5A5A5UL)//新建任务时用这个值填满整块任务栈
+#define taskSTACK_GUARD_WORDS 16U //栈底保留16个word作为保护区
+
 #include "projdefs.h"
 //任务控制块结构体定义
 typedef struct tskTaskControlBlock
@@ -20,6 +23,10 @@ typedef struct tskTaskControlBlock
     UBaseType_t uxBasePriority;                 //基础优先级
 
     StackType_t *pxStack;                       //任务栈起始地址
+    StackType_t *pxEndOfStack;                  //栈地址边界，超过这里就意味着溢出
+
+    uint32_t ulStackDepth;                      //栈深度
+
     char pcTaskName[configMAX_TASK_NAME_LEN];   //任务名称
     TickType_t xTicksToDelay;                   //延时节拍数
 

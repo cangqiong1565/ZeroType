@@ -21,7 +21,10 @@
 #define portNVIC_SYSTICK_INT_BIT ( 1UL << 1UL )
 #define portNVIC_SYSTICK_ENABLE_BIT ( 1UL << 0UL )
 
+#define portNVIC_SYSTICK_CURRENT_VALUE_REG (*((volatile uint32_t *)0xe000e018))
+
 StackType_t *pxPortInitialiseStack ( StackType_t *pxTopOfStack,TaskFunction_t pxCode,void*pvParameters);
 __attribute__((naked)) void prvStartFirstTask(void);
 void vPortSetupTimerInterrupt(void);
+void vPortEnableFPU(void);
 #endif //CHASE_LIGHT_OS_PORT_H

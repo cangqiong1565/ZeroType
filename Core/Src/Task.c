@@ -32,6 +32,52 @@ TickType_t xTickCount;
 /* 3. 定义空闲任务的 栈数组 (全局变量) */
 StackType_t IdleTaskStack[ configMINIMAL_STACK_SIZE ];
 
+static void prvTaskStackOverflowHook( void *pxTCB)
+{
+    (void)pxTCB;
+
+    portDISABLE_INTERRUPTS();//关闭中断，防止系统继续破坏现场
+
+    for (;;)
+    {
+        //停在这里说明溢出了
+    }
+}
+
+static void prvCheckTaskStack(TCB_t *pxTCB)
+{
+    uint32_t i;                  // 循环变量
+    uint32_t guard_words;        // 实际要检查多少个保护 word
+    StackType_t *stack_limit;    // 栈保护边界
+
+    if ((pxTCB == NULL) || (pxTCB->pxStack == NULL))
+    {
+        return;                  // TCB 或栈指针无效时不检查，避免空指针
+    }
+
+    guard_words = taskSTACK_GUARD_WORDS;         // 默认检查 16 个 word
+
+    if (pxTCB->ulStackDepth < guard_words)
+    {
+        guard_words = pxTCB->ulStackDepth;       // 防止极小栈越界检查
+    }
+
+    stack_limit = pxTCB->pxStack + guard_words;  // 栈低地址 + 保护区大小
+
+    if ((StackType_t *)pxTCB->pxTopOfStack <= stack_limit)
+    {
+        prvTaskStackOverflowHook(pxTCB);         // 保存过的栈顶已经压到保护区，判定危险
+    }
+
+    for (i = 0; i < guard_words; i++)
+    {
+        if (pxTCB->pxStack[i] != taskSTACK_FILL_WORD)
+        {
+            prvTaskStackOverflowHook(pxTCB);     // 栈底保护花纹被改，说明栈已经踩到底部
+        }
+    }
+}
+
 static void prvInitialiseNewTask
 (
     void (*pxTaskCode)(void *), //任务函数入口
@@ -46,6 +92,14 @@ static void prvInitialiseNewTask
     //uint32_t类型的指针辅助变量，用来存储栈顶指针
     UBaseType_t x;
     //unsigned long 类型的辅助变量和for循环里的i一个作用
+
+    pxNewTCB->ulStackDepth = ulStackDepth;
+    pxNewTCB->pxEndOfStack = pxNewTCB->pxStack + (ulStackDepth - 1U);
+
+    for (x = 0; x < ulStackDepth; x++)
+    {
+        pxNewTCB->pxStack[x] = taskSTACK_FILL_WORD; //把整块任务栈填成固定花纹，用来后面检查栈有没有被踩穿
+    }
 
     //获取栈顶地址，因为 ARM 的栈是“向下生长”的（高地址 -> 低地址），所以初始的栈顶指针必须指向数组的【最后/最高】那个位置
     pxTopOfStack = pxNewTCB->pxStack + (ulStackDepth - (uint32_t) 1);
@@ -81,6 +135,10 @@ static void prvInitialiseNewTask
 
     //新任务初始没有被任何事件唤醒
     pxNewTCB->xEventWasSet = pdFALSE;
+
+    //初始化当前和基础优先级
+    pxNewTCB->uxPriority = 0U;
+    pxNewTCB->uxBasePriority = 0U;
 
     //初始化任务栈
     pxNewTCB->pxTopOfStack = pxPortInitialiseStack(pxTopOfStack, pxTaskCode, pvParameters);
@@ -144,7 +202,11 @@ BaseType_t xPortStartScheduler(void)
     * SysTick 的优先级被设为了 240（最低）
     * 确保 RTOS 的内核任务切换（PendSV）和 心跳时钟（SysTick）永远不会打断用户的外部硬件中断（如串口等）。只有当 CPU 空闲，没有外部紧急事件时，RTOS 才会切换任务
     */
-    vPortSetupTimerInterrupt();
+
+    vPortEnableFPU();//启动前配置好FPU
+
+    vPortSetupTimerInterrupt();//再启动RTOS tick
+
     /* 启动第一个任务，不再返回 */
     prvStartFirstTask();
 
@@ -333,6 +395,8 @@ BaseType_t xPortStartScheduler(void)
 
 void vTaskSwitchContext(void)
 {
+    prvCheckTaskStack(pxCurrentTCB);
+
     int uxPriority = configMAX_PRIORITIES - 1;
 
     do
@@ -343,6 +407,7 @@ void vTaskSwitchContext(void)
             /* 2. 【核心修复】：使用你原本正确的宏，不仅获取任务，还要把指针向后挪动！
                   这保证了如果有两个同优先级的任务，它们能轮流执行，不会死机 */
             listGET_OWNER_OF_NEXT_ENTRY(pxCurrentTCB, &(pxReadyTasksLists[uxPriority]));
+            prvCheckTaskStack(pxCurrentTCB);
             return;
         }
         uxPriority--;
@@ -415,6 +480,25 @@ void vTaskDelay(const TickType_t xTicksToDelay)
     }
 }
 
+static void prvSelectHighestPriorityTask(void)
+{
+    int uxPriority = configMAX_PRIORITIES - 1;
+
+    do
+    {
+        if (listLIST_IS_EMPTY(&(pxReadyTasksLists[uxPriority])) == pdFALSE)
+        {
+            listGET_OWNER_OF_NEXT_ENTRY(pxCurrentTCB,&(pxReadyTasksLists[uxPriority]));
+
+            return;
+        }
+
+        uxPriority--;
+    }while (uxPriority >= 0);
+
+    pxCurrentTCB = &IdleTaskTCB;
+}
+
 
 //调度器启动（教学2）
 void vTaskStartScheduler(void)
@@ -434,7 +518,10 @@ void vTaskStartScheduler(void)
 
     vListInsertEnd(&(pxReadyTasksLists[0]), &(((TCB_t *) pxIdleTaskTCBBuffer)->xStateListItem));
 
-    pxCurrentTCB = &IMUTaskTCB;
+    prvSelectHighestPriorityTask();
+
+    portDISABLE_INTERRUPTS();
+
     if (xPortStartScheduler() != pdFALSE)
     {
         /* 调度器启动成功，则不会返回，即不会来到这里 */
@@ -608,6 +695,8 @@ void vTaskPlaceOnEventList(List_t * const pxEventList, const TickType_t xTicksTo
 //     }
 //     return xReturn;
 // }
+
+
 BaseType_t xTaskRemoveFromEventList(const List_t * const pxEventList)
 {
     TCB_t *pxUnblockedTCB;                               // 保存即将被唤醒的任务 TCB 指针

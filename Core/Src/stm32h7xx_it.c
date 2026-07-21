@@ -52,6 +52,26 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+extern volatile uint32_t g_boot_stage;
+extern volatile uint32_t g_error_stage;
+extern volatile uint32_t g_error_handler;
+extern volatile uint32_t g_fault_cfsr;
+extern volatile uint32_t g_fault_hfsr;
+extern volatile uint32_t g_fault_bfar;
+extern volatile uint32_t g_fault_mmfar;
+
+static void RecordFault(uint32_t handler_id)
+{
+  g_error_stage = g_boot_stage;
+  g_error_handler = handler_id;
+  g_fault_cfsr = SCB->CFSR;
+  g_fault_hfsr = SCB->HFSR;
+  g_fault_bfar = SCB->BFAR;
+  g_fault_mmfar = SCB->MMFAR;
+
+  __DSB();
+  __ISB();
+}
 
 /* USER CODE END 0 */
 
@@ -88,6 +108,7 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+  RecordFault(2);
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
@@ -103,6 +124,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+  RecordFault(3);
 
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
@@ -118,6 +140,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
+  RecordFault(4);
 
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
@@ -133,6 +156,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
+  RecordFault(5);
 
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
@@ -148,10 +172,10 @@ void UsageFault_Handler(void)
 // void SVC_Handler(void)
 // {
 //   /* USER CODE BEGIN SVCall_IRQn 0 */
-// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 //   /* USER CODE END SVCall_IRQn 0 */
 //   /* USER CODE BEGIN SVCall_IRQn 1 */
-// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 //   /* USER CODE END SVCall_IRQn 1 */
 // }
 
@@ -174,10 +198,10 @@ void DebugMon_Handler(void)
 // void PendSV_Handler(void)
 // {
 //   /* USER CODE BEGIN PendSV_IRQn 0 */
-// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 //   /* USER CODE END PendSV_IRQn 0 */
 //   /* USER CODE BEGIN PendSV_IRQn 1 */
-// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 //   /* USER CODE END PendSV_IRQn 1 */
 // }
 
@@ -187,11 +211,11 @@ void DebugMon_Handler(void)
 // void SysTick_Handler(void)
 // {
 //   /* USER CODE BEGIN SysTick_IRQn 0 */
-// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 //   /* USER CODE END SysTick_IRQn 0 */
 //
 //   /* USER CODE BEGIN SysTick_IRQn 1 */
-// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
+// // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // // //
 //   /* USER CODE END SysTick_IRQn 1 */
 // }
 
@@ -214,20 +238,6 @@ void DMA1_Stream0_IRQHandler(void)
   /* USER CODE BEGIN DMA1_Stream0_IRQn 1 */
 
   /* USER CODE END DMA1_Stream0_IRQn 1 */
-}
-
-/**
-  * @brief This function handles EXTI line[9:5] interrupts.
-  */
-void EXTI9_5_IRQHandler(void)
-{
-  /* USER CODE BEGIN EXTI9_5_IRQn 0 */
-
-  /* USER CODE END EXTI9_5_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_6);
-  /* USER CODE BEGIN EXTI9_5_IRQn 1 */
-
-  /* USER CODE END EXTI9_5_IRQn 1 */
 }
 
 /**

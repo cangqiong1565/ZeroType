@@ -22,16 +22,27 @@
 RingBuffer_t Rx_buffer;
 extern List_t pxReadyTasksLists[configMAX_PRIORITIES];
 extern Mutex_t usb_tx_mutex;
+extern volatile uint32_t g_boot_stage;
 
-#define IMU_STACK_SIZE 1024
+#define IMU_STACK_SIZE 2048
 StackType_t IMUStack[IMU_STACK_SIZE];
 TCB_t IMUTaskTCB;
 TaskHandle_t IMUTaskHandle = NULL;
 
-#define USB_STACK_SIZE 1024
+#define USB_STACK_SIZE 4096
 StackType_t USBStack[USB_STACK_SIZE];
 TCB_t USBTaskTCB;
 TaskHandle_t USBTaskHandle = NULL;
+
+#define TEST_STACK_SIZE 2048
+StackType_t TestStack[TEST_STACK_SIZE];
+TCB_t TestTaskTCB;
+TaskHandle_t TestTaskHandle = NULL;
+
+#define DSHOT_STACK_SIZE 2048
+StackType_t DshotStack[DSHOT_STACK_SIZE];
+TCB_t DshotTaskTCB;
+TaskHandle_t DshotTaskHandle = NULL;
 
 IMU_RawData raw_data;
 IMU_SensorData sensor_data;
@@ -41,11 +52,11 @@ static Queue_t imu_drdy_queue; //IMU DRDY 事件队列控制块(队列本体，�
 static uint8_t imu_drdy_queue_storage[1];//队列存储区：队列长度1,每个元素1字节（队列存数据的地方）
 static QueueHandle_t imu_drdy_queue_handle = NULL;//队列句柄，创建成功后指向imu_drdy_queue（IMU_Task和EXTIcallback通过它操纵队列）
 
-static uint8_t dshot_test_motor;
-static uint16_t dshot_target_throttle = 0;       // 串口命令设置的目标油门
-static uint16_t dshot_output_throttle = 0;       // 当前实际发给电调的油门
-static uint32_t dshot_arm_ticks = 0;             // 上电后持续发送 0 油门的计数
-static bool dshot_armed = false;                 // true 表示已经完成 0 油门解锁阶段
+static volatile uint8_t dshot_test_motor;
+static volatile uint16_t dshot_target_throttle = 0;       // 串口命令设置的目标油门
+static volatile uint16_t dshot_output_throttle = 0;       // 当前实际发给电调的油门
+static volatile uint32_t dshot_arm_ticks = 0;             // 上电后持续发送 0 油门的计数
+static volatile bool dshot_armed = false;                 // true 表示已经完成 0 油门解锁阶段
 
 static bool UsbCmdEqual(const char *cmd, const char *target)
 {
@@ -299,38 +310,6 @@ static void DshotProcessUsbRx(void)
     }
 }
 
-static void DshotUpdateOutput(void)
-{
-    uint16_t motor[4] = {0U, 0U, 0U, 0U};
-
-    if (!dshot_armed)
-    {
-        if (dshot_arm_ticks < DSHOT_ARM_TIME_MS)
-        {
-            dshot_arm_ticks++;
-        }
-        else
-        {
-            /*
-             * 3 秒 0 油门完成后，认为电调已经识别到合法 DShot 信号。
-             */
-            dshot_armed = true;
-            usb_log_printf("DShot armed, input throttle by USB");
-        }
-    }
-    else
-    {
-        motor[dshot_test_motor] = dshot_target_throttle;
-    }
-
-    dshot_output_throttle = motor[dshot_test_motor];
-
-    if (Dshot_Ready())
-    {
-        Dshot_WriteAll(motor[0],motor[1],motor[2],motor[3]);
-    }
-}
-
 static bool ImuSensorDataValid(const IMU_SensorData *s) {
     if (s == NULL) {
         return false;
@@ -395,30 +374,81 @@ void IMU_Task(void *pvParameters)
 
 void USB_Task(void *pvParameters)
 {
-    static uint32_t print_tick = 0;
+     static uint32_t print_tick = 0;
+
+     MX_USB_DEVICE_Init();
+
+     for (;;)
+     {
+         Betaflight_USB_Server();
+         DshotProcessUsbRx();
+
+         print_tick++;
+
+         if (print_tick>=100)
+         {
+             print_tick = 0;
+
+             usb_log_printf("OUT:%u SET:%u ARM:%u",
+                 (unsigned)dshot_output_throttle,
+                 (unsigned)dshot_target_throttle,
+                 (unsigned)dshot_armed);
+         }
+
+         HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_3);
+         vTaskDelay(1);
+    }
+}
+
+void Test_Task(void *pvParameters)
+{
+    for (;;)
+    {
+        HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_0);
+        vTaskDelay(200);
+    }
+
+}
+
+void Dshot_Task(void *pvParameters)
+{
+    uint16_t motor[4];
+
+    (void)pvParameters;
 
     for (;;)
     {
-        Betaflight_USB_Server();
-        DshotProcessUsbRx();
-        DshotUpdateOutput();
+        motor[0] = 0U;
+        motor[1] = 0U;
+        motor[2] = 0U;
+        motor[3] = 0U;
 
-        print_tick++;
-
-        if (print_tick>=100)
+        if (!dshot_armed)
         {
-            print_tick = 0;
-
-            usb_log_printf("P:%.1f R:%.1f Y:%.1f OUT:%u SET:%u ARM:%u",
-                att_data.pitch,
-                att_data.roll,
-                att_data.yaw,
-                (unsigned)dshot_output_throttle,
-                (unsigned)dshot_target_throttle,
-                (unsigned)dshot_armed);
+            if (dshot_arm_ticks < DSHOT_ARM_TIME_MS)
+            {
+                dshot_arm_ticks++;
+            }
+            else
+            {
+                dshot_armed = true;
+                usb_log_printf("DShot armed, input throttle by USB");
+            }
+        }
+        else
+        {
+            motor[dshot_test_motor] = dshot_target_throttle;
         }
 
-        HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_3);
+        dshot_output_throttle = motor[dshot_test_motor];
+        //
+        // if (Dshot_WriteAll(motor[0], motor[1], motor[2], motor[3]) != 0U)
+        // {
+        //     (void)Dshot_WaitDmaDone(2U);
+        // }
+
+        Dshot_WriteAll(motor[0], motor[1], motor[2], motor[3]);
+
         vTaskDelay(1);
     }
 }
@@ -432,16 +462,16 @@ void AppTaskInit(void)
         &imu_drdy_queue//队列控制块
         );
 
-    IMUTaskHandle = xTaskCreateStatic(
-        IMU_Task,
-        "IMUTask",
-        IMU_STACK_SIZE,
-        NULL,
-        IMUStack,
-        &IMUTaskTCB
-    );
-    IMUTaskTCB.uxPriority = 3;
-
+    // IMUTaskHandle = xTaskCreateStatic(
+    //     IMU_Task,
+    //     "IMUTask",
+    //     IMU_STACK_SIZE,
+    //     NULL,
+    //     IMUStack,
+    //     &IMUTaskTCB
+    // );
+    // IMUTaskTCB.uxPriority = 3;
+    //
     USBTaskHandle = xTaskCreateStatic(
     USB_Task,
     "USBTask",
@@ -452,8 +482,30 @@ void AppTaskInit(void)
     );
     USBTaskTCB.uxPriority = 2;
 
+    TestTaskHandle = xTaskCreateStatic(
+    Test_Task,
+    "TestTask",
+    TEST_STACK_SIZE,
+    NULL,
+    TestStack,
+    &TestTaskTCB
+    );
+    TestTaskTCB.uxPriority = 1;
+
+    DshotTaskHandle = xTaskCreateStatic(
+    Dshot_Task,
+    "DshotTask",
+    DSHOT_STACK_SIZE,
+    NULL,
+    DshotStack,
+    &DshotTaskTCB
+    );
+    DshotTaskTCB.uxPriority = 3;
+
     vListInsertEnd(&(pxReadyTasksLists[2]), &(USBTaskTCB.xStateListItem));
-    vListInsertEnd(&(pxReadyTasksLists[3]), &(IMUTaskTCB.xStateListItem));
+    // vListInsertEnd(&(pxReadyTasksLists[3]), &(IMUTaskTCB.xStateListItem));
+    vListInsertEnd(&(pxReadyTasksLists[1]), &(TestTaskTCB.xStateListItem));
+    vListInsertEnd(&(pxReadyTasksLists[3]), &(DshotTaskTCB.xStateListItem));
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
