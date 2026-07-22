@@ -13,11 +13,9 @@
 #include <math.h>
 #include "Queue.h"
 #include <stdbool.h>
-
-#include "Dshot.h"
-
-#define DSHOT_ARM_TIME_MS 3000U
-#define DSHOT_STEP        25U
+#include "Motor.h"
+#include "UsbCommand.h"
+#include "crsf.h"
 
 RingBuffer_t Rx_buffer;
 extern List_t pxReadyTasksLists[configMAX_PRIORITIES];
@@ -44,6 +42,11 @@ StackType_t DshotStack[DSHOT_STACK_SIZE];
 TCB_t DshotTaskTCB;
 TaskHandle_t DshotTaskHandle = NULL;
 
+#define CRSF_STACK_SIZE 2048
+StackType_t CRSFStack[CRSF_STACK_SIZE];
+TCB_t CRSFTaskTCB;
+TaskHandle_t CRSFTaskHandle = NULL;
+
 IMU_RawData raw_data;
 IMU_SensorData sensor_data;
 AttitudeData att_data;
@@ -51,264 +54,6 @@ AttitudeData att_data;
 static Queue_t imu_drdy_queue; //IMU DRDY 事件队列控制块(队列本体，里面存读写指针，队列长度，等待任务链表等信息)
 static uint8_t imu_drdy_queue_storage[1];//队列存储区：队列长度1,每个元素1字节（队列存数据的地方）
 static QueueHandle_t imu_drdy_queue_handle = NULL;//队列句柄，创建成功后指向imu_drdy_queue（IMU_Task和EXTIcallback通过它操纵队列）
-
-static volatile uint8_t dshot_test_motor;
-static volatile uint16_t dshot_target_throttle = 0;       // 串口命令设置的目标油门
-static volatile uint16_t dshot_output_throttle = 0;       // 当前实际发给电调的油门
-static volatile uint32_t dshot_arm_ticks = 0;             // 上电后持续发送 0 油门的计数
-static volatile bool dshot_armed = false;                 // true 表示已经完成 0 油门解锁阶段
-
-static bool UsbCmdEqual(const char *cmd, const char *target)
-{
-    while ((*cmd != '\0') && (*target != '\0'))
-    {
-        char a = *cmd;
-        char b = *target;
-
-        if ((a >= 'A') && (a <= 'Z'))
-        {
-            a = (char)(a - 'A' + 'a');
-        }
-
-        if ((b >= 'A') && (b <= 'Z'))
-        {
-            b = (char)(b - 'A' + 'a');
-        }
-
-        if (a != b)
-        {
-            return false;
-        }
-
-        cmd++;
-        target++;
-    }
-
-    return (*cmd == '\0') && (*target == '\0');
-}
-
-static bool UsbCmdParseUint16(const char *cmd, uint16_t *value)
-{
-    uint32_t result = 0;
-    bool has_digit = false;
-
-    while ((*cmd == ' ') || (*cmd == '\t'))
-    {
-        cmd++;
-    }
-
-    while ((*cmd >= '0') && (*cmd <= '9'))
-    {
-        has_digit = true;
-        result = result * 10U + (uint32_t)(*cmd - '0');
-
-        if (result > 65535U)
-        {
-            return false;
-        }
-
-        cmd++;
-    }
-
-    while ((*cmd == ' ') || (*cmd == '\t'))
-    {
-        cmd++;
-    }
-
-    if ((!has_digit) || (*cmd != '\0') || (value == NULL))
-    {
-        return false;
-    }
-
-    *value = (uint16_t)result;
-    return true;
-}
-
-static uint16_t DshotClampThrottle(uint16_t value)
-{
-    if (value == 0U)
-    {
-        return 0U;
-    }
-
-    if (value < DSHOT_THROTTLE_MIN)
-    {
-        return DSHOT_THROTTLE_MIN;
-    }
-
-    if (value > DSHOT_THROTTLE_MAX)
-    {
-        return DSHOT_THROTTLE_MAX;
-    }
-
-    return value;
-}
-
-static void DshotSetTargetThrottle(uint16_t value)
-{
-    if ((!dshot_armed) && (value != 0U))
-    {
-        usb_log_printf("DShot not armed yet, keep throttle 0");
-        return;
-    }
-
-    dshot_target_throttle = DshotClampThrottle(value);
-
-    usb_log_printf("DShot target: %u", (unsigned)dshot_target_throttle);
-}
-
-static void DshotHandleCommand(const char *cmd)
-{
-    uint8_t motor;
-    uint16_t value;
-
-    if ((cmd == NULL) || (*cmd == '\0'))
-    {
-        return;
-    }
-
-    if ((cmd[0] == 'm') || (cmd[0] == 'M'))
-    {
-
-        if ((cmd[1] < '0') || (cmd[1] > '3'))
-        {
-            usb_log_printf("Bad motor");
-            return;
-        }
-
-        if (cmd[2] != ' ')
-        {
-            usb_log_printf("Use: m0 100");
-            return;
-        }
-
-        motor = (uint8_t)(cmd[1] - '0');
-
-        if (!UsbCmdParseUint16(&cmd[3], &value))
-        {
-            usb_log_printf("Use:m0 100");
-            return;
-        }
-
-        dshot_test_motor = motor;
-        DshotSetTargetThrottle(value);
-
-        usb_log_printf("Motor %u target %u",(unsigned)dshot_test_motor,(unsigned)dshot_target_throttle);
-
-        return;
-
-    }
-
-    if (UsbCmdEqual(cmd, "help") || UsbCmdEqual(cmd, "?"))
-    {
-        usb_log_printf("Commands: arm, stop, 0..2047, +, -");
-        return;
-    }
-
-    if (UsbCmdEqual(cmd, "arm"))
-    {
-        /*
-         * 重新进入解锁流程：目标油门清零，然后连续发送一段时间 0 油门。
-         * 电调看到稳定合法的 DShot 0 后，才会接受后续油门。
-         */
-        dshot_target_throttle = 0U;
-        dshot_output_throttle = 0U;
-        dshot_arm_ticks = 0U;
-        dshot_armed = false;
-        usb_log_printf("DShot arming: sending zero throttle");
-        return;
-    }
-
-    if (UsbCmdEqual(cmd, "stop") || UsbCmdEqual(cmd, "disarm"))
-    {
-        DshotSetTargetThrottle(0U);
-        return;
-    }
-
-    if (UsbCmdEqual(cmd, "+"))
-    {
-        if (dshot_target_throttle == 0U)
-        {
-            DshotSetTargetThrottle(DSHOT_THROTTLE_MIN);
-        }
-        else if (dshot_target_throttle <= (DSHOT_THROTTLE_MAX - DSHOT_STEP))
-        {
-            DshotSetTargetThrottle((uint16_t)(dshot_target_throttle + DSHOT_STEP));
-        }
-        else
-        {
-            DshotSetTargetThrottle(DSHOT_THROTTLE_MAX);
-        }
-
-        return;
-    }
-
-    if (UsbCmdEqual(cmd, "-"))
-    {
-        if (dshot_target_throttle <= DSHOT_THROTTLE_MIN)
-        {
-            DshotSetTargetThrottle(0U);
-        }
-        else if (dshot_target_throttle < (DSHOT_THROTTLE_MIN + DSHOT_STEP))
-        {
-            DshotSetTargetThrottle(DSHOT_THROTTLE_MIN);
-        }
-        else
-        {
-            DshotSetTargetThrottle((uint16_t)(dshot_target_throttle - DSHOT_STEP));
-        }
-
-        return;
-    }
-
-    if (UsbCmdParseUint16(cmd, &value))
-    {
-        DshotSetTargetThrottle(value);
-        return;
-    }
-
-    usb_log_printf("Bad command: %s", cmd);
-}
-
-static void DshotProcessUsbRx(void)
-{
-    static char line[24];
-    static uint8_t line_len = 0;
-    uint8_t ch;
-
-    while (usb_rx_get_byte(&ch) != 0U)
-    {
-        if ((ch == '\r') || (ch == '\n'))
-        {
-            if (line_len > 0U)
-            {
-                line[line_len] = '\0';
-                DshotHandleCommand(line);
-                line_len = 0U;
-            }
-        }
-        else if ((ch == '\b') || (ch == 0x7FU))
-        {
-            if (line_len > 0U)
-            {
-                line_len--;
-            }
-        }
-        else if ((ch >= 32U) && (ch <= 126U))
-        {
-            if (line_len < (sizeof(line) - 1U))
-            {
-                line[line_len] = (char)ch;
-                line_len++;
-            }
-            else
-            {
-                line_len = 0U;
-                usb_log_printf("Command too long");
-            }
-        }
-    }
-}
 
 static bool ImuSensorDataValid(const IMU_SensorData *s) {
     if (s == NULL) {
@@ -375,13 +120,18 @@ void IMU_Task(void *pvParameters)
 void USB_Task(void *pvParameters)
 {
      static uint32_t print_tick = 0;
+     MotorStatus_t status;
+     uint16_t ch[CRSF_NUM_CHANNELS];
+     const CRSF_Stats *crsf_stats;
+
+    (void)pvParameters;
 
      MX_USB_DEVICE_Init();
 
-     for (;;)
+    for (;;)
      {
-         Betaflight_USB_Server();
-         DshotProcessUsbRx();
+        Betaflight_USB_Server();
+         UsbCommand_ProcessRx();
 
          print_tick++;
 
@@ -389,10 +139,42 @@ void USB_Task(void *pvParameters)
          {
              print_tick = 0;
 
-             usb_log_printf("OUT:%u SET:%u ARM:%u",
-                 (unsigned)dshot_output_throttle,
-                 (unsigned)dshot_target_throttle,
-                 (unsigned)dshot_armed);
+             Motor_GetStatus(&status);
+
+             CRSF_GetChannels(ch);
+
+             crsf_stats = CRSF_GetStats();
+
+             // usb_log_printf("STATE:%u THR:%u M:%u %u %u %u",
+             //     (unsigned)status.state,
+             //     (unsigned)status.rc_throttle_us,
+             //     (unsigned)status.output[0],
+             //     (unsigned)status.output[1],
+             //     (unsigned)status.output[2],
+             //     (unsigned)status.output[3]);
+
+             usb_log_printf(
+     "CRSF link:%u ch:%u %u %u %u %u %u %u %u %u %u %u %u ok:%lu crc:%lu len:%lu drop:%lu",
+     (unsigned)CRSF_IsLinkUp(),
+
+     (unsigned)ch[0],
+     (unsigned)ch[1],
+     (unsigned)ch[2],
+     (unsigned)ch[3],
+     (unsigned)ch[4],
+     (unsigned)ch[5],
+     (unsigned)ch[6],
+     (unsigned)ch[7],
+     (unsigned)ch[8],
+     (unsigned)ch[9],
+     (unsigned)ch[10],
+     (unsigned)ch[11],
+
+     (unsigned long)crsf_stats->frame_ok,
+     (unsigned long)crsf_stats->frame_crc_err,
+     (unsigned long)crsf_stats->frame_len_err,
+     (unsigned long)usb_log_dropped_count()
+           );
          }
 
          HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_3);
@@ -412,44 +194,41 @@ void Test_Task(void *pvParameters)
 
 void Dshot_Task(void *pvParameters)
 {
-    uint16_t motor[4];
-
     (void)pvParameters;
 
     for (;;)
     {
-        motor[0] = 0U;
-        motor[1] = 0U;
-        motor[2] = 0U;
-        motor[3] = 0U;
-
-        if (!dshot_armed)
-        {
-            if (dshot_arm_ticks < DSHOT_ARM_TIME_MS)
-            {
-                dshot_arm_ticks++;
-            }
-            else
-            {
-                dshot_armed = true;
-                usb_log_printf("DShot armed, input throttle by USB");
-            }
-        }
-        else
-        {
-            motor[dshot_test_motor] = dshot_target_throttle;
-        }
-
-        dshot_output_throttle = motor[dshot_test_motor];
-        //
-        // if (Dshot_WriteAll(motor[0], motor[1], motor[2], motor[3]) != 0U)
-        // {
-        //     (void)Dshot_WaitDmaDone(2U);
-        // }
-
-        Dshot_WriteAll(motor[0], motor[1], motor[2], motor[3]);
-
+        Motor_Update();
         vTaskDelay(1);
+    }
+}
+
+void CRSF_Task(void *pvParameters)
+{
+    (void)pvParameters;               // 当前没用到任务参数，避免编译警告
+
+    uint16_t ch[CRSF_NUM_CHANNELS];   // 保存一次读取出来的 CRSF 通道值
+
+    MotorRcInput_t input;             // 准备喂给 Motor 层的遥控输入结构体
+
+    for (;;)
+    {
+        CRSF_GetChannels(ch);         // 从 CRSF 驱动里复制当前所有通道
+
+        input.throttle = CRSF_MapRawToUs(ch[2]);
+        // 一般 ch[2] 是油门，具体要看你的遥控器通道映射
+
+        input.arm_switch = ch[4] > CRSF_CHANNEL_MID;
+        // 假设 ch[4] 是 ARM 开关
+        // 大于中点表示解锁，小于中点表示锁定
+
+        input.failsafe = !CRSF_IsLinkUp();
+        // 如果 CRSF 超时，直接进入 failsafe
+
+        Motor_SetRcInput(&input);     // 把遥控器状态交给 Motor 层
+        // Motor 层决定输出 0、怠速，还是油门值
+
+        vTaskDelay(1);                // 1ms 更新一次遥控器输入，足够当前阶段测试
     }
 }
 
@@ -502,10 +281,21 @@ void AppTaskInit(void)
     );
     DshotTaskTCB.uxPriority = 3;
 
+    CRSFTaskHandle = xTaskCreateStatic(
+    CRSF_Task,
+    "CRSFTask",
+    CRSF_STACK_SIZE,
+    NULL,
+    CRSFStack,
+    &CRSFTaskTCB
+);
+    CRSFTaskTCB.uxPriority = 4;
+
     vListInsertEnd(&(pxReadyTasksLists[2]), &(USBTaskTCB.xStateListItem));
     // vListInsertEnd(&(pxReadyTasksLists[3]), &(IMUTaskTCB.xStateListItem));
     vListInsertEnd(&(pxReadyTasksLists[1]), &(TestTaskTCB.xStateListItem));
     vListInsertEnd(&(pxReadyTasksLists[3]), &(DshotTaskTCB.xStateListItem));
+    vListInsertEnd(&(pxReadyTasksLists[4]), &(CRSFTaskTCB.xStateListItem));
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)

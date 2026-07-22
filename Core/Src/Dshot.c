@@ -32,6 +32,10 @@ static uint16_t Dshot_ClampThrottle(uint16_t throttle)
         throttle = DSHOT_THROTTLE_MAX;
     }
 
+    /*
+     * DShot 的 0 是 MOTOR_STOP。
+     * 非 0 油门必须避开 1..47 这段保留命令区。
+     */
     if ((throttle > 0U) && (throttle < DSHOT_THROTTLE_MIN))
     {
         throttle = DSHOT_THROTTLE_MIN;

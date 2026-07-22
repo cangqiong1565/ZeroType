@@ -21,6 +21,7 @@
 #include "dma.h"
 #include "spi.h"
 #include "tim.h"
+#include "usart.h"
 #include "usb_device.h"
 #include "gpio.h"
 
@@ -30,6 +31,7 @@
 #include "app_task.h"
 #include "Dshot.h"
 #include "MahonyAHRS.h"
+#include "crsf.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -92,6 +94,7 @@ int main(void)
 
   /* MPU Configuration--------------------------------------------------------*/
   MPU_Config();
+
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
@@ -114,17 +117,17 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_SPI3_Init();
+  MX_USB_DEVICE_Init();
   MX_TIM8_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
-  HAL_Delay(1000);
-
   __HAL_RCC_D2SRAM1_CLK_ENABLE();
   __HAL_RCC_D2SRAM2_CLK_ENABLE();
   __HAL_RCC_D2SRAM3_CLK_ENABLE();
 
   __DSB();
   __ISB();
-
+  CRSF_Init();
   Dshot_Init();
   MahonyAHRS_init(2.0f, 0.0f);
   prvInitialiseTaskLists();
