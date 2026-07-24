@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
+#include "i2c.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -120,6 +121,7 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_TIM8_Init();
   MX_UART5_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
   __HAL_RCC_D2SRAM1_CLK_ENABLE();
   __HAL_RCC_D2SRAM2_CLK_ENABLE();

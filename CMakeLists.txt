@@ -47,6 +47,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         Core/Inc/UsbCommand.h
         Core/Src/crsf.c
         Core/Inc/crsf.h
+        Core/Src/SPL06.c
+        Core/Inc/SPL06.h
 )
 
 # Add STM32CubeMX generated sources
