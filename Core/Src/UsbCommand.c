@@ -113,14 +113,28 @@ static void UsbCommand_HandleLine(const char *cmd)
     uint16_t value;
     MotorStatus_t status;
 
-    if ((cmd == NULL) || (*cmd == '\0'))
+    if (cmd == NULL)
+    {
+        return;
+    }
+
+    /*
+     * 串口工具有时会在命令前带空格或 tab。
+     * 先跳过前导空白，让 " dir0 n" 也能被识别成 "dir0 n"。
+     */
+    while ((*cmd == ' ') || (*cmd == '\t'))
+    {
+        cmd++;
+    }
+
+    if (*cmd == '\0')
     {
         return;
     }
 
     if (UsbCmdEqual(cmd, "help") || UsbCmdEqual(cmd, "?"))
     {
-        usb_log_printf("Commands: arm, disarm, stop, thr 1000, status");
+        usb_log_printf("Commands: stop, m0 100, dir0 n, dir0 r, cmd0 7, cmd0 7 s, status");
         return;
     }
 
@@ -135,6 +149,158 @@ static void UsbCommand_HandleLine(const char *cmd)
     {
         Motor_Disarm();
         usb_log_printf("DISARMED");
+        return;
+    }
+
+    /*
+     * escdir
+     *
+     * Props Out 最终 ESC 方向写入命令：
+     * m0 r
+     * m1 r
+     * m2 r
+     * m3 n
+     *
+     * 这个命令需要 ESC 上电才能生效。
+     * 执行时不要装桨。
+     */
+    if (UsbCmdEqual(cmd, "escdir"))
+    {
+        Motor_RequestEscDirectionFix();
+        usb_log_printf("ESC DIR: props-out m0:r m1:r m2:r m3:n saving");
+        return;
+    }
+
+    /*
+     * dir0 n / dir0 r
+     * dir1 n / dir1 r
+     * dir2 n / dir2 r
+     * dir3 n / dir3 r
+     *
+     * 设置单个 ESC 的绝对方向：
+     * n = normal
+     * r = reversed
+     *
+     * 注意这不是“翻转一次”，而是写入一个确定方向。
+     */
+    if (((cmd[0] == 'd') || (cmd[0] == 'D')) &&
+        ((cmd[1] == 'i') || (cmd[1] == 'I')) &&
+        ((cmd[2] == 'r') || (cmd[2] == 'R')) &&
+        (cmd[3] >= '0') && (cmd[3] <= '3') &&
+        (cmd[4] == ' '))
+    {
+        uint8_t motor_index = (uint8_t)(cmd[3] - '0');
+        char dir = cmd[5];
+
+        if ((dir >= 'A') && (dir <= 'Z'))
+        {
+            dir = (char)(dir - 'A' + 'a');
+        }
+
+        if ((dir != 'n') && (dir != 'r'))
+        {
+            usb_log_printf("Use: dir0 n or dir0 r");
+            return;
+        }
+
+        Motor_RequestEscDirection(motor_index, dir == 'r');
+        usb_log_printf("DIR%u:%c saving",
+                       (unsigned)motor_index,
+                       dir);
+        return;
+    }
+
+    /*
+     * cmd0 7
+     * cmd0 8
+     * cmd0 20
+     * cmd0 21
+     * cmd0 21 s
+     *
+     * 给单个 ESC 发送原始 DShot 特殊命令。
+     * 末尾带 s 表示命令后自动发送 SAVE_SETTINGS。
+     */
+    if (((cmd[0] == 'c') || (cmd[0] == 'C')) &&
+        ((cmd[1] == 'm') || (cmd[1] == 'M')) &&
+        ((cmd[2] == 'd') || (cmd[2] == 'D')) &&
+        (cmd[3] >= '0') && (cmd[3] <= '3') &&
+        (cmd[4] == ' '))
+    {
+        uint8_t motor_index = (uint8_t)(cmd[3] - '0');
+        bool save_after = false;
+
+        if (!UsbCmdParseUint16(&cmd[5], &value))
+        {
+            /*
+             * 支持 "cmd0 21 s" 这种形式。
+             * 这里手动解析前面的数字和末尾 s。
+             */
+            const char *p = &cmd[5];
+            uint32_t result = 0U;
+            bool has_digit = false;
+
+            while ((*p >= '0') && (*p <= '9'))
+            {
+                has_digit = true;
+                result = result * 10U + (uint32_t)(*p - '0');
+                p++;
+            }
+
+            while ((*p == ' ') || (*p == '\t'))
+            {
+                p++;
+            }
+
+            if (((*p == 's') || (*p == 'S')) && (*(p + 1) == '\0') && has_digit && (result <= 65535U))
+            {
+                value = (uint16_t)result;
+                save_after = true;
+            }
+            else
+            {
+                usb_log_printf("Use: cmd0 21 or cmd0 21 s");
+                return;
+            }
+        }
+
+        if (value > 47U)
+        {
+            usb_log_printf("DShot cmd must be 0..47");
+            return;
+        }
+
+        Motor_RequestEscRawCommand(motor_index, value, save_after);
+        usb_log_printf("CMD%u:%u%s",
+                       (unsigned)motor_index,
+                       (unsigned)value,
+                       save_after ? " save" : "");
+        return;
+    }
+
+    /*
+     * m0 100
+     * m1 100
+     * m2 100
+     * m3 100
+     *
+     * 单电机编号测试命令。
+     * 这里的 100 是 DShot 值，不是遥控器 1000..2000 油门值。
+     * 每次命令只让一个电机转，其它三个强制输出 0。
+     */
+    if (((cmd[0] == 'm') || (cmd[0] == 'M')) &&
+        (cmd[1] >= '0') && (cmd[1] <= '3') &&
+        (cmd[2] == ' '))
+    {
+        uint8_t motor_index = (uint8_t)(cmd[1] - '0');
+
+        if (!UsbCmdParseUint16(&cmd[3], &value))
+        {
+            usb_log_printf("Use: m0 100");
+            return;
+        }
+
+        Motor_SetSingleTestOutput(motor_index, value);
+        usb_log_printf("M%u:%u", (unsigned)motor_index, (unsigned)value);
         return;
     }
 

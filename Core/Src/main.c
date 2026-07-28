@@ -33,6 +33,7 @@
 #include "Dshot.h"
 #include "MahonyAHRS.h"
 #include "crsf.h"
+#include "Control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -131,6 +132,8 @@ int main(void)
   __ISB();
   CRSF_Init();
   Dshot_Init();
+  Control_Init();
+  imu_status = ICM42688_Init();
   MahonyAHRS_init(2.0f, 0.0f);
   prvInitialiseTaskLists();
   AppTaskInit();

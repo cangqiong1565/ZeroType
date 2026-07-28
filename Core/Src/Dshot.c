@@ -68,6 +68,45 @@ static uint16_t Dshot_MakeFrame(uint16_t value,uint8_t telemetry)
     return (uint16_t)((packet << 4) | crc);//将CRC拼进去
 }
 
+/*
+ * DShot 特殊命令帧生成函数。
+ *
+ * DShot 的 0..47 是命令区，例如：
+ * 12 = SAVE_SETTINGS
+ * 20 = SPIN_DIRECTION_NORMAL
+ * 21 = SPIN_DIRECTION_REVERSED
+ *
+ * 这些值不能经过 Dshot_ClampThrottle()，否则 1..47 会被改成 48，
+ * 电调就收不到真正的命令。
+ */
+static uint16_t Dshot_MakeCommandFrame(uint16_t command)
+{
+    uint16_t packet;
+    uint8_t crc;
+    uint8_t telemetry;
+
+    /*
+     * 只允许 0..47 的 DShot 命令值。
+     * 如果传进来超范围，按 0 处理，也就是 motor stop。
+     */
+    if (command > 47U)
+    {
+        command = 0U;
+    }
+
+    /*
+     * Betaflight 在发送非 0 DShot 命令时会 requestTelemetry。
+     * 普通 motor stop 命令不请求遥测。
+     */
+    telemetry = (command != 0U) ? 1U : 0U;
+
+    command &= 0x07FFU;
+    packet = (uint16_t)((command << 1) | telemetry);
+    crc = Dshot_CalcCRC(packet);
+
+    return (uint16_t)((packet << 4) | crc);
+}
+
 //DMA波形打包函数
 static void Dshot_PackBurstFrame(uint16_t m0,uint16_t m1,uint16_t m2,uint16_t m3)
 {
@@ -95,6 +134,43 @@ static void Dshot_PackBurstFrame(uint16_t m0,uint16_t m1,uint16_t m2,uint16_t m3
     }
 
     //写入两位结束位（应该是帧结束吧，一会看看）
+    for (uint8_t tail = 16U; tail < DSHOT_FRAME_LEN; tail++)
+    {
+        uint32_t base = (uint32_t)tail * DSHOT_MOTOR_COUNT;
+
+        dshot_dma_buf[base + 0U] = 0U;
+        dshot_dma_buf[base + 1U] = 0U;
+        dshot_dma_buf[base + 2U] = 0U;
+        dshot_dma_buf[base + 3U] = 0U;
+    }
+}
+
+/*
+ * DShot 特殊命令 DMA 波形打包函数。
+ *
+ * 和 Dshot_PackBurstFrame() 的区别只有一个：
+ * 这里使用 Dshot_MakeCommandFrame()，不会把 20/21/12 这类命令限幅成 48。
+ */
+static void Dshot_PackBurstCommandFrame(uint16_t c0,uint16_t c1,uint16_t c2,uint16_t c3)
+{
+    uint16_t frame[DSHOT_MOTOR_COUNT];
+
+    frame[0] = Dshot_MakeCommandFrame(c0);
+    frame[1] = Dshot_MakeCommandFrame(c1);
+    frame[2] = Dshot_MakeCommandFrame(c2);
+    frame[3] = Dshot_MakeCommandFrame(c3);
+
+    for (uint8_t bit = 0U; bit < 16U; bit++)
+    {
+        uint16_t mask = (uint16_t)(1U << (15U - bit));
+        uint32_t base = (uint32_t)bit * DSHOT_MOTOR_COUNT;
+
+        dshot_dma_buf[base + 0U] = (frame[0] & mask) ? DSHOT_BIT_1 : DSHOT_BIT_0;
+        dshot_dma_buf[base + 1U] = (frame[1] & mask) ? DSHOT_BIT_1 : DSHOT_BIT_0;
+        dshot_dma_buf[base + 2U] = (frame[2] & mask) ? DSHOT_BIT_1 : DSHOT_BIT_0;
+        dshot_dma_buf[base + 3U] = (frame[3] & mask) ? DSHOT_BIT_1 : DSHOT_BIT_0;
+    }
+
     for (uint8_t tail = 16U; tail < DSHOT_FRAME_LEN; tail++)
     {
         uint32_t base = (uint32_t)tail * DSHOT_MOTOR_COUNT;
@@ -268,6 +344,61 @@ uint8_t Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3)
     __HAL_TIM_ENABLE_DMA(&htim8, TIM_DMA_UPDATE);
 
     //都完成，退出临界区
+    taskEXIT_CRITICAL();
+
+    return 1U;
+}
+
+//四电机 DShot 特殊命令发送函数
+uint8_t Dshot_WriteAllCommand(uint16_t c0, uint16_t c1, uint16_t c2, uint16_t c3)
+{
+    if (dshot_busy != 0U)
+    {
+        return 0U;
+    }
+
+    Dshot_ClearOldDmaEvents();
+
+    /*
+     * 注意这里打包的是特殊命令帧，不是普通油门帧。
+     * c0..c3 可以是 12/20/21 这种低于 48 的命令值。
+     */
+    Dshot_PackBurstCommandFrame(c0,c1,c2,c3);
+
+    if ((SCB->CCR & SCB_CCR_DC_Msk) != 0U)
+    {
+        SCB_CleanDCache_by_Addr((uint32_t *)dshot_dma_buf,
+                                (int32_t)DSHOT_BURST_BUF_BYTES);
+    }
+
+    taskENTER_CRITICAL();
+
+    if (dshot_busy != 0U)
+    {
+        taskEXIT_CRITICAL();
+        return 0U;
+    }
+
+    dshot_busy = 1U;
+
+    __HAL_TIM_DISABLE_DMA(&htim8, TIM_DMA_UPDATE);
+    __HAL_TIM_CLEAR_FLAG(&htim8,TIM_FLAG_UPDATE);
+
+    htim8.Instance->DCR = TIM_DMABASE_CCR1 | TIM_DMABURSTLENGTH_4TRANSFERS;
+
+    if (HAL_DMA_Start_IT(htim8.hdma[TIM_DMA_ID_UPDATE],
+        (uint32_t)dshot_dma_buf,
+        (uint32_t)&htim8.Instance->DMAR,
+        DSHOT_BURST_BUF_LEN) != HAL_OK)
+    {
+        dshot_busy = 0U;
+        taskEXIT_CRITICAL();
+        return 0U;
+    }
+
+    __HAL_TIM_SET_COUNTER(&htim8 ,0U);
+    __HAL_TIM_ENABLE_DMA(&htim8, TIM_DMA_UPDATE);
+
     taskEXIT_CRITICAL();
 
     return 1U;

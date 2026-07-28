@@ -258,9 +258,14 @@ void ICM42688_ConvertRaw(const IMU_RawData *raw, IMU_SensorData *sensor)
     /* 坐标系映射保持右手系: FC_X=chip_X, FC_Y=-chip_Y, FC_Z=-chip_Z */
     /* ---- 加速度计 (g) + LPF fc≈50Hz ---- */
     static float ax_f = 0, ay_f = 0, az_f = 0;
-    float ax =  raw->accel_x / 2048.0f;
-    float ay =  raw->accel_y / 2048.0f;
-    float az = -raw->accel_z / 2048.0f;
+    float ax_old =  raw->accel_x / 2048.0f;
+    float ay_old =  raw->accel_y / 2048.0f;
+    float az_old = -raw->accel_z / 2048.0f;
+
+    float ax = -ay_old;
+    float ay = ax_old;
+    float az = az_old;
+
     ax_f += 0.24f * (ax - ax_f);
     ay_f += 0.24f * (ay - ay_f);
     az_f += 0.24f * (az - az_f);
@@ -270,9 +275,14 @@ void ICM42688_ConvertRaw(const IMU_RawData *raw, IMU_SensorData *sensor)
 
     /* ---- 陀螺仪: 减 bias, 转 dps, LPF, 转 rad/s ---- */
     static float gx_f=0, gy_f=0, gz_f=0;
-    float gx = -(raw->gyro_x - gyro_bias[0]) / 16.4f;
-    float gy = -(raw->gyro_y - gyro_bias[1]) / 16.4f;
-    float gz =  (raw->gyro_z - gyro_bias[2]) / 16.4f;
+    float gx_old = -(raw->gyro_x - gyro_bias[0]) / 16.4f;
+    float gy_old = -(raw->gyro_y - gyro_bias[1]) / 16.4f;
+    float gz_old =  (raw->gyro_z - gyro_bias[2]) / 16.4f;
+
+    float gx = -gy_old;
+    float gy = gx_old;
+    float gz = gz_old;
+
     gx_f += 0.56f * (gx - gx_f);
     gy_f += 0.56f * (gy - gy_f);
     gz_f += 0.56f * (gz - gz_f);

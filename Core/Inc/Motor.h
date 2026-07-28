@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-
+#include "Control.h"
 /*
  * Motor 是飞控的电机业务层。
  *
@@ -43,4 +43,10 @@ void Motor_SetRcThrottle(uint16_t value);
 void Motor_Update(void);
 void Motor_GetStatus(MotorStatus_t *status);
 void Motor_SetRcInput(const MotorRcInput_t *input);
+void Motor_SetSingleTestOutput(uint8_t motor_index, uint16_t dshot_value);
+void Motor_ClearTestOutput(void);
+void Motor_RequestEscDirectionFix(void);
+void Motor_RequestEscDirection(uint8_t motor_index, bool reversed);
+void Motor_RequestEscRawCommand(uint8_t motor_index, uint16_t command, bool save_after);
+void Motor_SetControlOutput(const ControlOutput_t *out);
 #endif //ZEROTYPE_MOTOR_H

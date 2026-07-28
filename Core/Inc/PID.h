@@ -17,7 +17,7 @@ typedef struct {
     float d_filter_tau;//D项低通滤波的时间常数 τ（越小滤波越强）
     float filtered_D;//D项经过低通滤波后的值
     uint8_t initialized;//是否已经运行过一次
-}PID_t;//速度控制器
+}PID_t;//通用PID控制器
 
 void PID_Init(PID_t *pid, float Kp, float Ki, float Kd,
               float integral_max, float output_max, float d_filter_tau);

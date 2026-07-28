@@ -2,7 +2,6 @@
 #define ZEROTYPE_SPL06_H
 
 #include <stdint.h>
-
 #include "i2c.h"
 
 #define SPL06_REG_PSR_B2         0x00U

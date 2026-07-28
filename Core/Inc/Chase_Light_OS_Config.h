@@ -5,7 +5,7 @@
 #define configUSE_16_BIT_TICKS 0            //是否是32位单片机
 #define configMAX_TASK_NAME_LEN 16          //最长任务名
 #define configSUPPORT_STATIC_ALLOCATION 1   //是否支持
-#define configMAX_PRIORITIES 5              //最长链表
+#define configMAX_PRIORITIES 9              //最长链表
 
 #ifdef __NVIC_PRIO_BITS
 #define configPRIO_BITS __NVIC_PRIO_BITS

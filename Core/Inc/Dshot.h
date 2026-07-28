@@ -14,6 +14,7 @@
 
 void Dshot_Init(void);
 uint8_t Dshot_WriteAll(uint16_t m0, uint16_t m1, uint16_t m2, uint16_t m3);
+uint8_t Dshot_WriteAllCommand(uint16_t c0, uint16_t c1, uint16_t c2, uint16_t c3);
 uint8_t Dshot_WaitDmaDone(uint32_t timeout_ticks);
 uint8_t Dshot_Ready(void);
 
