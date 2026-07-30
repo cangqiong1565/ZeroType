@@ -11,7 +11,7 @@
  * Motor.c 负责软件解锁、失控保护、遥控油门映射和四电机输出。
  */
 #define MOTOR_COUNT        4U
-#define MOTOR_IDLE_DSHOT   100U
+#define MOTOR_IDLE_DSHOT   150U
 #define RC_THROTTLE_MIN    1000U
 #define RC_THROTTLE_MAX    2000U
 

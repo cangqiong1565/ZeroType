@@ -49,8 +49,8 @@
  * Conservative DShot output range for test-stand work.
  * Raise CONTROL_MOTOR_MAX_DSHOT only after no-prop direction tests are correct.
  */
-#define CONTROL_MOTOR_MIN_DSHOT          100U
-#define CONTROL_MOTOR_MAX_DSHOT          300U
+#define CONTROL_MOTOR_MIN_DSHOT          150U
+#define CONTROL_MOTOR_MAX_DSHOT          1500U
 
 typedef struct
 {

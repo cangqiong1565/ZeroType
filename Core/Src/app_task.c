@@ -84,11 +84,11 @@ static bool ImuSensorDataValid(const IMU_SensorData *s) {
         return false;
     }
 
-    float acc_sq = s->accel_x * s->accel_x + s->accel_y * s->accel_y +s->accel_z * s->accel_z;
-
-    if (acc_sq < 0.25f || acc_sq > 2.25f) {
-        return false;
-    }
+    // float acc_sq = s->accel_x * s->accel_x + s->accel_y * s->accel_y +s->accel_z * s->accel_z;
+    //
+    // if (acc_sq < 0.25f || acc_sq > 2.25f) {
+    //     return false;
+    // }
 
     return true;
 }
@@ -195,7 +195,7 @@ void Control_Task(void *pvParameters)
         // rc.level_switch = true;
         // rc.failsafe = false;
 
-        sensor.roll_deg = att_data.roll;
+        sensor.roll_deg = -att_data.roll;
         sensor.pitch_deg = att_data.pitch;
 
         sensor.gyro_x_dps = sensor_data.gyro_x * 57.29587f;
@@ -283,6 +283,10 @@ void USB_Task(void *pvParameters)
      */
     MX_USB_DEVICE_Init();
 
+    uint16_t ch[CRSF_NUM_CHANNELS];
+    uint16_t ch_us[8];
+    uint8_t i;
+
     for (;;)
     {
         /*
@@ -299,6 +303,13 @@ void USB_Task(void *pvParameters)
         UsbCommand_ProcessRx();
 
         print_tick++;
+
+        CRSF_GetChannels(ch);
+
+        for (i = 0U; i < 8U; i++)
+        {
+            ch_us[i] = CRSF_MapRawToUs(ch[i]);
+        }
 
         if (print_tick >= 100U)
         {
@@ -322,6 +333,17 @@ void USB_Task(void *pvParameters)
                            (unsigned)ctrl.motor[2],
                            (unsigned)ctrl.motor[3]);
 
+            // usb_log_printf("RC raw:%u %u %u %u %u %u %u %u",
+            //    (unsigned)ch[0],
+            //    (unsigned)ch[1],
+            //    (unsigned)ch[2],
+            //    (unsigned)ch[3],
+            //    (unsigned)ch[4],
+            //    (unsigned)ch[5],
+            //    (unsigned)ch[6],
+            //    (unsigned)ch[7]);
+
+
         }
         /*
          * USB任务活着的指示灯。
@@ -340,7 +362,7 @@ void Test_Task(void *pvParameters)
     for (;;)
     {
         HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_0);
-        vTaskDelay(200);
+        vTaskDelay(500);
     }
 
 }

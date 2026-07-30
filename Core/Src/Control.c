@@ -180,10 +180,10 @@ static void Control_MixToMotors(float base_throttle,
         return;
     }
 
-    m0 = base_throttle + roll + pitch + yaw;
-    m1 = base_throttle + roll - pitch - yaw;
-    m2 = base_throttle - roll + pitch - yaw;
-    m3 = base_throttle - roll - pitch + yaw;
+    m0 = base_throttle - roll + pitch + yaw;
+    m1 = base_throttle - roll - pitch - yaw;
+    m2 = base_throttle + roll + pitch - yaw;
+    m3 = base_throttle + roll - pitch + yaw;
 
     //输出限幅
     m0 = Control_ClampFloat(m0, CONTROL_MOTOR_MIN_DSHOT, CONTROL_MOTOR_MAX_DSHOT);
@@ -203,44 +203,44 @@ void Control_Init(void)
 {
     //初始化所有环
     PID_Init(&roll_angle_pid,
-             4.0f,
-             0.0f,
-             0.0f,
+             8.5f,
+             0.8f,
+             0.6f,
              20.0f,
-             CONTROL_MAX_LEVEL_RATE_DPS,
+             400,
              0.0f);
 
     PID_Init(&pitch_angle_pid,
-             4.0f,
-             0.0f,
-             0.0f,
+             8.0f,
+             0.8f,
+             0.6f,
              20.0f,
              CONTROL_MAX_LEVEL_RATE_DPS,
              0.0f);
 
     PID_Init(&roll_rate_pid,
-             0.04f,
+             1.5f,
              0.0f,
              0.0f,
              20.0f,
-             40.0f,
+             400.0f,
              0.02f);
 
     PID_Init(&pitch_rate_pid,
-             0.04f,
+             2.0f,
              0.0f,
              0.0f,
              20.0f,
              40.0f,
              0.02f);
-
-    PID_Init(&yaw_rate_pid,
-             0.02f,
-             0.0f,
-             0.0f,
-             20.0f,
-             20.0f,
-             0.02f);
+    //
+    // PID_Init(&yaw_rate_pid,
+    //          0.02f,
+    //          0.0f,
+    //          0.0f,
+    //          20.0f,
+    //          20.0f,
+    //          0.02f);
 
     //复位所有值
     Control_Reset();
@@ -313,10 +313,10 @@ void Control_Update(const ControlRcInput_t *rc,
     base_throttle = Control_MapThrottleToDshot(out->throttle_us);
 
     //roll外环
-    out->target_roll_rate_dps = PID_Update(&roll_angle_pid,
-                                           CONTROL_LEVEL_ROLL_DEG,
-                                           sensor->roll_deg,
-                                           dt);
+     out->target_roll_rate_dps = PID_Update(&roll_angle_pid,
+                                            CONTROL_LEVEL_ROLL_DEG,
+                                            sensor->roll_deg,
+                                            dt);
 
     //pitch外环
     out->target_pitch_rate_dps = PID_Update(&pitch_angle_pid,
@@ -328,7 +328,7 @@ void Control_Update(const ControlRcInput_t *rc,
      * 目标 yaw 角速度固定为：
      * 0 deg/s
      */
-    out->target_yaw_rate_dps = CONTROL_TARGET_YAW_RATE_DPS;
+    // out->target_yaw_rate_dps = CONTROL_TARGET_YAW_RATE_DPS;
 
     //内环
     out->roll_pid = PID_Update(&roll_rate_pid,
@@ -340,11 +340,11 @@ void Control_Update(const ControlRcInput_t *rc,
                                 out->target_pitch_rate_dps,
                                 sensor->gyro_y_dps,
                                 dt);
-    //yaw阻尼环
-    out->yaw_pid = PID_Update(&yaw_rate_pid,
-                              out->target_yaw_rate_dps,
-                              sensor->gyro_z_dps,
-                              dt);
+    // //yaw阻尼环
+    // out->yaw_pid = PID_Update(&yaw_rate_pid,
+    //                           out->target_yaw_rate_dps,
+    //                           sensor->gyro_z_dps,
+    //                           dt);
 
     //混控
     Control_MixToMotors(base_throttle,
