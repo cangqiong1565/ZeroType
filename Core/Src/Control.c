@@ -215,7 +215,7 @@ void Control_Init(void)
              0.8f,
              0.6f,
              20.0f,
-             CONTROL_MAX_LEVEL_RATE_DPS,
+             400,
              0.0f);
 
     PID_Init(&roll_rate_pid,
@@ -231,16 +231,16 @@ void Control_Init(void)
              0.0f,
              0.0f,
              20.0f,
-             40.0f,
+             400.0f,
              0.02f);
-    //
-    // PID_Init(&yaw_rate_pid,
-    //          0.02f,
-    //          0.0f,
-    //          0.0f,
-    //          20.0f,
-    //          20.0f,
-    //          0.02f);
+
+    PID_Init(&yaw_rate_pid,
+             2.0`f,
+             0.0f,
+             0.0f,
+             20.0f,
+             20.0f,
+             0.02f);
 
     //复位所有值
     Control_Reset();
@@ -324,6 +324,8 @@ void Control_Update(const ControlRcInput_t *rc,
                                             sensor->pitch_deg,
                                             dt);
 
+    out->target_yaw_rate_dps = 0.0f;
+
     /* 第一版不做角度保持，只做阻尼。
      * 目标 yaw 角速度固定为：
      * 0 deg/s
@@ -340,11 +342,11 @@ void Control_Update(const ControlRcInput_t *rc,
                                 out->target_pitch_rate_dps,
                                 sensor->gyro_y_dps,
                                 dt);
-    // //yaw阻尼环
-    // out->yaw_pid = PID_Update(&yaw_rate_pid,
-    //                           out->target_yaw_rate_dps,
-    //                           sensor->gyro_z_dps,
-    //                           dt);
+    //yaw阻尼环
+    out->yaw_pid = PID_Update(&yaw_rate_pid,
+                              out->target_yaw_rate_dps,
+                              sensor->gyro_z_dps,
+                              dt);
 
     //混控
     Control_MixToMotors(base_throttle,
