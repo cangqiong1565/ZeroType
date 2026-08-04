@@ -134,6 +134,11 @@ int main(void)
   Dshot_Init();
   Control_Init();
   imu_status = ICM42688_Init();
+  if (imu_status == ICM42688_OK)
+  {
+    /* 上电时飞机必须静止，这一步采集gyro零偏，后续ConvertRaw会自动减掉bias。 */
+    imu_status = ICM42688_CalibrateBias();
+  }
   MahonyAHRS_init(2.0f, 0.0f);
   prvInitialiseTaskLists();
   AppTaskInit();

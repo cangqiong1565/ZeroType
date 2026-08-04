@@ -350,6 +350,10 @@ ICM42688_Status ICM42688_CalibrateBias(void)
  * ================================================================ */
 void ICM42688_UpdateBias(const IMU_RawData *raw)
 {
+    if (raw == NULL) {
+        return;
+    }
+
     static uint32_t still_count = 0;
     static int64_t  sum[3] = {0, 0, 0};
     const  float    GYRO_LSB_PER_DPS = 16.4f;

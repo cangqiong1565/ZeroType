@@ -3,16 +3,24 @@
 #include <stddef.h>
 
 #include "PID.h"
-#include <stddef.h>
 
 static PID_t roll_angle_pid;
 static PID_t pitch_angle_pid;
+static PID_t yaw_angle_pid;
 
 static PID_t roll_rate_pid;
 static PID_t pitch_rate_pid;
 static PID_t yaw_rate_pid;
 
 static bool control_enabled_latch = false;
+
+//yaw_hold_valid表示当前是否已经锁定了一个航向目标
+static bool yaw_hold_valid = false;
+
+//yaw_hold_target_deg是在解锁瞬间记录下来的相对航向角
+static float yaw_hold_target_deg = 0.0f;
+
+static bool yaw_stick_was_active = false;
 
 //浮点限制函数
 static float Control_ClampFloat(float value, float min_value, float max_value)
@@ -28,6 +36,45 @@ static float Control_ClampFloat(float value, float min_value, float max_value)
     }
 
     return value;
+}
+
+static float Control_StickToNorm(uint16_t us)
+{
+    int32_t delta = (int32_t)us - (int32_t)CONTROL_MID_RC_US;
+
+    if ((delta > -(int32_t)CONTROL_STICK_DEADBAND_US) &&
+    (delta <  (int32_t)CONTROL_STICK_DEADBAND_US))
+    {
+        return 0.0f;
+    }
+    if (delta > 0)
+    {
+        delta -= (int32_t)CONTROL_STICK_DEADBAND_US;
+    }
+    else
+    {
+        delta += (int32_t)CONTROL_STICK_DEADBAND_US;
+    }
+
+    return Control_ClampFloat((float)delta /
+                                  (500.0f - (float)CONTROL_STICK_DEADBAND_US),
+                                  -1.0f,
+                                  1.0f);
+}
+//角度折返函数，把任意角度折到 -180~180，避免 179 到 -179 被算成 358 度误差
+static float Control_Wrap180(float angle_deg)
+{
+    while (angle_deg > 180.0f)
+    {
+        angle_deg -= 360.0f;
+    }
+
+    while (angle_deg < -180.0f)
+    {
+        angle_deg += 360.0f;
+    }
+
+    return angle_deg;
 }
 
 //U16限制函数
@@ -67,6 +114,8 @@ static void Control_ClearOutput(ControlOutput_t *out)
     out->target_roll_rate_dps = 0.0f;
     out->target_pitch_rate_dps = 0.0f;
     out->target_yaw_rate_dps = 0.0f;
+    out->target_yaw_deg = 0.0f;
+    out->yaw_error_deg = 0.0f;
 
     //输出角度清零
     out->roll_pid = 0.0f;
@@ -204,18 +253,26 @@ void Control_Init(void)
     //初始化所有环
     PID_Init(&roll_angle_pid,
              8.5f,
-             0.8f,
+             0.5f,
              0.6f,
              20.0f,
-             400,
+             300,
              0.0f);
 
     PID_Init(&pitch_angle_pid,
              8.0f,
-             0.8f,
+             0.5f,
              0.6f,
              20.0f,
-             400,
+             300,
+             0.0f);
+
+    PID_Init(&yaw_angle_pid,
+             8.0f,
+             0.8f,
+             0.6f,
+             10.0f,
+             300,
              0.0f);
 
     PID_Init(&roll_rate_pid,
@@ -223,7 +280,7 @@ void Control_Init(void)
              0.0f,
              0.0f,
              20.0f,
-             400.0f,
+             300.0f,
              0.02f);
 
     PID_Init(&pitch_rate_pid,
@@ -231,15 +288,15 @@ void Control_Init(void)
              0.0f,
              0.0f,
              20.0f,
-             400.0f,
+             300.0f,
              0.02f);
 
     PID_Init(&yaw_rate_pid,
-             2.0`f,
+             2.0f,
              0.0f,
              0.0f,
              20.0f,
-             20.0f,
+             300.0f,
              0.02f);
 
     //复位所有值
@@ -250,12 +307,17 @@ void Control_Reset(void)
 {
     PID_Reset(&roll_angle_pid);
     PID_Reset(&pitch_angle_pid);
+    PID_Reset(&yaw_angle_pid);
 
     PID_Reset(&roll_rate_pid);
     PID_Reset(&pitch_rate_pid);
     PID_Reset(&yaw_rate_pid);
 
     control_enabled_latch = false;
+    yaw_hold_valid = false;
+    yaw_hold_target_deg = 0.0f;
+
+    yaw_stick_was_active = false;
 }
 
 //更新函数，每周期调用一次，完成安全检查，油门映射，内外环和混控输出
@@ -266,6 +328,14 @@ void Control_Update(const ControlRcInput_t *rc,
 {
     //基准油门，后续在这个值上修正
     float base_throttle;
+    float roll_cmd;
+    float pitch_cmd;
+    float yaw_cmd;
+
+    float target_roll_deg;
+    float target_pitch_deg;
+
+    bool yaw_stick_active;
 
     if (out == NULL)
     {
@@ -301,47 +371,102 @@ void Control_Update(const ControlRcInput_t *rc,
         //油门地位检查通过时，软件锁打开
         control_enabled_latch = true;
 
+        //第一次真正允许控制时，锁定当前yaw角作为航向保持目标
+        yaw_hold_valid = true;
+        yaw_hold_target_deg = sensor->yaw_deg;
+
         //第一次允许控制时清PID，从干净状态开始控制
         PID_Reset(&roll_angle_pid);
         PID_Reset(&pitch_angle_pid);
+        PID_Reset(&yaw_angle_pid);
         PID_Reset(&roll_rate_pid);
         PID_Reset(&pitch_rate_pid);
         PID_Reset(&yaw_rate_pid);
     }
 
+    if (!yaw_hold_valid)
+    {
+        //理论上第一次解锁时已经锁定目标，这里是兜底保护
+        yaw_hold_valid = true;
+        yaw_hold_target_deg = sensor->yaw_deg;
+        PID_Reset(&yaw_angle_pid);
+    }
+
     //把遥控器油门转换成Dshot油门
     base_throttle = Control_MapThrottleToDshot(out->throttle_us);
 
+    roll_cmd = Control_StickToNorm(rc->roll_us);
+    pitch_cmd = Control_StickToNorm(rc->pitch_us);
+    yaw_cmd = Control_StickToNorm(rc->yaw_us);
+
+    target_roll_deg = -roll_cmd * CONTROL_MAX_STICK_ANGLE_DEG;
+    target_pitch_deg = pitch_cmd * CONTROL_MAX_STICK_ANGLE_DEG;
+
     //roll外环
      out->target_roll_rate_dps = PID_Update(&roll_angle_pid,
-                                            CONTROL_LEVEL_ROLL_DEG,
+                                            target_roll_deg,
                                             sensor->roll_deg,
                                             dt);
-
+    
     //pitch外环
     out->target_pitch_rate_dps = PID_Update(&pitch_angle_pid,
-                                            CONTROL_LEVEL_PITCH_DEG,
+                                            target_pitch_deg,
                                             sensor->pitch_deg,
                                             dt);
 
-    out->target_yaw_rate_dps = 0.0f;
+    yaw_stick_active = (yaw_cmd != 0.0f);
 
-    /* 第一版不做角度保持，只做阻尼。
-     * 目标 yaw 角速度固定为：
-     * 0 deg/s
-     */
-    // out->target_yaw_rate_dps = CONTROL_TARGET_YAW_RATE_DPS;
+    if (yaw_stick_active)
+    {
+        //yaw 摇杆有动作：直接给目标yaw角速度
+        out->target_yaw_rate_dps = yaw_cmd * CONTROL_MAX_YAW_RATE_DPS;
+
+        //打杆期间不断刷新航向目标，这样松杆后会保持松杆瞬间的方向
+        yaw_hold_target_deg = sensor->yaw_deg;
+        yaw_hold_valid = true;
+
+        if (!yaw_stick_was_active)
+        {
+            PID_Reset(&yaw_angle_pid);
+        }
+
+        yaw_stick_was_active = true;
+
+        out->target_yaw_deg = yaw_hold_target_deg;
+        out->yaw_error_deg = 0.0f;
+    }
+    else
+    {
+        //刚刚松开 yaw 杆：把当前yaw锁定成新的保持目标
+        if (yaw_stick_was_active || !yaw_hold_valid)
+        {
+            yaw_hold_target_deg = sensor->yaw_deg;
+            yaw_hold_valid = true;
+            yaw_stick_was_active = false;
+            PID_Reset(&yaw_angle_pid);
+        }
+
+        //yaw 航向保持：目标角 - 当前角，必须处理 ±180 跳变
+        out->target_yaw_deg = yaw_hold_target_deg;
+        out->yaw_error_deg = Control_Wrap180(yaw_hold_target_deg - sensor->yaw_deg);
+
+        //yaw 外环：航向误差 -> 目标yaw角速度
+        out->target_yaw_rate_dps = PID_Update(&yaw_angle_pid,
+                                              0.0f,
+                                              -out->yaw_error_deg,
+                                              dt);
+    }
 
     //内环
-    out->roll_pid = PID_Update(&roll_rate_pid,
-                               out->target_roll_rate_dps,
-                               sensor->gyro_x_dps,
-                               dt);
-
-    out->pitch_pid = PID_Update(&pitch_rate_pid,
-                                out->target_pitch_rate_dps,
-                                sensor->gyro_y_dps,
+     out->roll_pid = PID_Update(&roll_rate_pid,
+                                out->target_roll_rate_dps,
+                                sensor->gyro_x_dps,
                                 dt);
+
+     out->pitch_pid = PID_Update(&pitch_rate_pid,
+                                 out->target_pitch_rate_dps,
+                                 sensor->gyro_y_dps,
+                                 dt);
     //yaw阻尼环
     out->yaw_pid = PID_Update(&yaw_rate_pid,
                               out->target_yaw_rate_dps,

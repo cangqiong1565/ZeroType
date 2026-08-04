@@ -79,6 +79,18 @@ static volatile SPL06_Status_t baro_status = SPL06_ERROR;
 static float baro_ref_pressure_pa = 0.0f;
 static float baro_altitude_m = 0.0f;
 
+//读取控制输出是否使能，IMU_Task用它判断现在能不能做动态gyro零偏修正
+static bool ControlOutputEnabledSnapshot(void)
+{
+    bool enabled;
+
+    taskENTER_CRITICAL();
+    enabled = control_output.enabled;
+    taskEXIT_CRITICAL();
+
+    return enabled;
+}
+
 static bool ImuSensorDataValid(const IMU_SensorData *s) {
     if (s == NULL) {
         return false;
@@ -148,7 +160,11 @@ void IMU_Task(void *pvParameters)
                 continue;
             }
 
-            // ICM42688_UpdateBias(&raw_data);
+            if (!ControlOutputEnabledSnapshot())
+            {
+                //只有未解锁/未输出时才允许动态修gyro零偏，避免飞行中把真实动作学成bias
+                ICM42688_UpdateBias(&raw_data);
+            }
 
             ICM42688_ConvertRaw(&raw_data, &sensor_data);
 
@@ -185,7 +201,11 @@ void Control_Task(void *pvParameters)
         //读取当前CRSF通道，读出来的是原始值
         CRSF_GetChannels(ch);
 
+        rc.roll_us = CRSF_MapRawToUs(ch[0]);
+        rc.pitch_us = CRSF_MapRawToUs(ch[1]);
         rc.throttle_us = CRSF_MapRawToUs(ch[2]);
+        rc.yaw_us = CRSF_MapRawToUs(ch[3]);
+
         rc.arm_switch = ch[4] > CRSF_CHANNEL_MID;
         rc.level_switch = ch[5] > CRSF_CHANNEL_MID;
         rc.failsafe = !CRSF_IsLinkUp();
@@ -197,6 +217,7 @@ void Control_Task(void *pvParameters)
 
         sensor.roll_deg = -att_data.roll;
         sensor.pitch_deg = att_data.pitch;
+        sensor.yaw_deg = att_data.yaw;
 
         sensor.gyro_x_dps = sensor_data.gyro_x * 57.29587f;
         sensor.gyro_y_dps = sensor_data.gyro_y * 57.29587f;
@@ -275,6 +296,10 @@ void USB_Task(void *pvParameters)
     static uint32_t print_tick = 0U;
 
     ControlOutput_t ctrl;
+
+    IMU_SensorData imu;        // 用来保存一份 IMU 数据快照
+    AttitudeData att;          // 用来保存一份姿态角快照
+    int gyro_z_dps;            // yaw角速度
     /*
      * USB CDC 初始化。
      *
@@ -317,21 +342,34 @@ void USB_Task(void *pvParameters)
 
             taskENTER_CRITICAL();
             ctrl = control_output;
+
+            // 拷贝当前 IMU 数据，避免打印时数据被 IMU_Task 更新
+            imu = sensor_data;
+
+            // 拷贝当前姿态角，方便同时看 yaw 角
+            att = att_data;
+
             taskEXIT_CRITICAL();
 
+            gyro_z_dps = (int)(imu.gyro_z * 57.2958f);
 
-            usb_log_printf("CTRL en:%u r:%d p:%d tr:%d tp:%d rp:%d pp:%d m:%u %u %u %u",
-                           (unsigned)ctrl.enabled,
-                           (int)att_data.roll,
-                           (int)att_data.pitch,
-                           (int)ctrl.target_roll_rate_dps,
-                           (int)ctrl.target_pitch_rate_dps,
-                           (int)ctrl.roll_pid,
-                           (int)ctrl.pitch_pid,
-                           (unsigned)ctrl.motor[0],
-                           (unsigned)ctrl.motor[1],
-                           (unsigned)ctrl.motor[2],
-                           (unsigned)ctrl.motor[3]);
+
+            usb_log_printf(
+            "CTRL en:%u r:%d p:%d y:%d yt:%d ye:%d gz:%d ty:%d yp:%d m:%u %u %u %u",
+            (unsigned)ctrl.enabled,
+            (int)att.roll,
+            (int)att.pitch,
+            (int)att.yaw,
+            (int)ctrl.target_yaw_deg,
+            (int)ctrl.yaw_error_deg,
+            gyro_z_dps,
+            (int)ctrl.target_yaw_rate_dps,
+            (int)ctrl.yaw_pid,
+            (unsigned)ctrl.motor[0],
+            (unsigned)ctrl.motor[1],
+            (unsigned)ctrl.motor[2],
+            (unsigned)ctrl.motor[3]
+            );
 
             // usb_log_printf("RC raw:%u %u %u %u %u %u %u %u",
             //    (unsigned)ch[0],
